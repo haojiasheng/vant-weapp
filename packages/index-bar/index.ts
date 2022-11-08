@@ -1,8 +1,7 @@
 import { GREEN } from '../common/color';
 import { VantComponent } from '../common/component';
 import { useChildren } from '../common/relation';
-import { getRect, isDef } from '../common/utils';
-import { pageScrollMixin } from '../mixins/page-scroll';
+import { getRect, isDef, getScrollOffset } from '../common/utils';
 
 const indexList = () => {
   const indexList: string[] = [];
@@ -43,20 +42,9 @@ VantComponent({
     },
   },
 
-  mixins: [
-    pageScrollMixin(function (event) {
-      this.scrollTop = event?.scrollTop || 0;
-      this.onScroll();
-    }),
-  ],
-
   data: {
     activeAnchorIndex: null,
     showSidebar: false,
-  },
-
-  created() {
-    this.scrollTop = 0;
   },
 
   methods: {
@@ -72,7 +60,7 @@ VantComponent({
           });
 
           this.setRect().then(() => {
-            this.onScroll();
+            this.changeActive();
           });
         }, 0);
       });
@@ -86,27 +74,29 @@ VantComponent({
       ]);
     },
 
-    setAnchorsRect() {
+    async setAnchorsRect() {
+      const res = await getScrollOffset();
       return Promise.all(
         this.children.map((anchor) =>
           getRect(anchor, '.van-index-anchor-wrapper').then((rect) => {
             Object.assign(anchor, {
               height: rect.height,
-              top: rect.top + this.scrollTop,
+              top: rect.top + res.scrollTop,
             });
           })
         )
       );
     },
 
-    setListRect() {
+    async setListRect() {
+      const res = await getScrollOffset();
       return getRect(this, '.van-index-bar').then((rect) => {
         if (!isDef(rect)) {
           return;
         }
         Object.assign(this, {
           height: rect.height,
-          top: rect.top + this.scrollTop,
+          top: rect.top + res.scrollTop,
         });
       });
     },
@@ -144,68 +134,87 @@ VantComponent({
       }));
     },
 
-    getActiveAnchorIndex() {
-      const { children, scrollTop } = this;
-      const { sticky, stickyOffsetTop } = this.data;
-
-      for (let i = this.children.length - 1; i >= 0; i--) {
-        const preAnchorHeight = i > 0 ? children[i - 1].height : 0;
-        const reachTop = sticky ? preAnchorHeight + stickyOffsetTop : 0;
-
-        if (reachTop + scrollTop >= children[i].top) {
-          return i;
-        }
-      }
-
-      return -1;
+    getActiveMargin(anchor) {
+      return anchor.height * 1.5 + this.data.stickyOffsetTop;
     },
 
-    onScroll() {
-      const { children = [], scrollTop } = this;
-
-      if (!children.length) {
-        return;
-      }
-
-      const { sticky, stickyOffsetTop, zIndex, highlightColor } = this.data;
-
-      const active = this.getActiveAnchorIndex();
-
-      this.setDiffData({
-        target: this,
-        data: {
-          activeAnchorIndex: active,
-        },
+    changeActive() {
+      const intersectionList: WechatMiniprogram.IntersectionObserverObserveCallbackResult[] =
+        [];
+      this.children.forEach((anchor, index) => {
+        wx.createIntersectionObserver(anchor)
+          .relativeToViewport({
+            top: -this.getActiveMargin(anchor),
+          })
+          .observe('.van-index-anchor-wrapper', (res) => {
+            intersectionList[index] = res;
+            const active = this.getActiveAnchorIndex(intersectionList);
+            this.setDiffData({
+              target: this,
+              data: {
+                activeAnchorIndex: active,
+              },
+            });
+            this.setStyle(active);
+          });
       });
+    },
 
-      if (sticky) {
-        let isActiveAnchorSticky = false;
-
-        if (active !== -1) {
-          isActiveAnchorSticky =
-            children[active].top <= stickyOffsetTop + scrollTop;
+    getActiveAnchorIndex(intersectionList) {
+      const len = intersectionList.length;
+      let active = -1;
+      for (let i = 0; i < len; i++) {
+        const item = intersectionList[i];
+        const margin = this.getActiveMargin(this.children[i]);
+        const nextMargin = this.getActiveMargin(this.children[i + 1]);
+        if (!item) {
+          // eslint-disable-next-line no-continue
+          continue;
+        }
+        const {
+          boundingClientRect: { bottom },
+        } = item;
+        const {
+          boundingClientRect: { bottom: nextBottom },
+        } = intersectionList[i + 1] || { boundingClientRect: {} };
+        if (i === 0) {
+          if (bottom > margin) {
+            break;
+          }
         }
 
+        if (bottom <= margin) {
+          if (nextBottom > nextMargin) {
+            active = i;
+            break;
+          }
+          active = i;
+        }
+      }
+
+      return active;
+    },
+
+    setStyle(active) {
+      const { children } = this;
+      const { sticky, stickyOffsetTop, zIndex, highlightColor } = this.data;
+      if (sticky) {
         children.forEach((item, index) => {
           if (index === active) {
             let wrapperStyle = '';
             let anchorStyle = `
-              color: ${highlightColor};
-            `;
+        color: ${highlightColor};
+      `;
 
-            if (isActiveAnchorSticky) {
-              wrapperStyle = `
-                height: ${children[index].height}px;
-              `;
-
-              anchorStyle = `
-                position: fixed;
-                top: ${stickyOffsetTop}px;
-                z-index: ${zIndex};
-                color: ${highlightColor};
-              `;
-            }
-
+            wrapperStyle = `
+          height: ${children[index].height}px;
+        `;
+            anchorStyle = `
+          position: fixed;
+          top: ${stickyOffsetTop}px;
+          z-index: ${zIndex};
+          color: ${highlightColor};
+        `;
             this.setDiffData({
               target: item,
               data: {
@@ -216,23 +225,19 @@ VantComponent({
             });
           } else if (index === active - 1) {
             const currentAnchor = children[index];
-
             const currentOffsetTop = currentAnchor.top;
             const targetOffsetTop =
               index === children.length - 1
                 ? this.top
                 : children[index + 1].top;
-
             const parentOffsetHeight = targetOffsetTop - currentOffsetTop;
             const translateY = parentOffsetHeight - currentAnchor.height;
-
             const anchorStyle = `
               position: relative;
               transform: translate3d(0, ${translateY}px, 0);
               z-index: ${zIndex};
               color: ${highlightColor};
             `;
-
             this.setDiffData({
               target: item,
               data: {
@@ -289,7 +294,9 @@ VantComponent({
       );
 
       if (anchor) {
-        anchor.scrollIntoView(this.scrollTop);
+        wx.pageScrollTo({
+          scrollTop: anchor.top,
+        });
         this.$emit('select', anchor.data.index);
       }
     },

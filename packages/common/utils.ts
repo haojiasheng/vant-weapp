@@ -1,5 +1,9 @@
 import { isDef, isNumber, isPlainObject, isPromise } from './validator';
-import { canIUseGroupSetData, canIUseNextTick, getSystemInfoSync } from './version';
+import {
+  canIUseGroupSetData,
+  canIUseNextTick,
+  getSystemInfoSync,
+} from './version';
 
 export { isDef } from './validator';
 export { getSystemInfoSync } from './version';
@@ -111,4 +115,15 @@ export function toPromise(promiseLike: Promise<unknown> | unknown) {
 export function getCurrentPage<T>() {
   const pages = getCurrentPages();
   return pages[pages.length - 1] as T & WechatMiniprogram.Page.TrivialInstance;
+}
+
+export function getScrollOffset(): Promise<WechatMiniprogram.ScrollOffsetCallbackResult> {
+  return new Promise((resolve) => {
+    wx.createSelectorQuery()
+      .selectViewport()
+      .scrollOffset((res) => {
+        resolve(res);
+      })
+      .exec();
+  });
 }
